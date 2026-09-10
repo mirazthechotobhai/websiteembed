@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #09090b;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* TV Remote D-Pad / Keyboard spatial navigation focus styling */
+:focus-visible {
+  outline: 3px solid #6366f1 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.5) !important;
+}
+
+/* Safe area padding for mobile notch and TV overscan */
+.safe-padding-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+.safe-padding-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+

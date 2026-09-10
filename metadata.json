@@ -1,0 +1,6 @@
+{
+  "name": "Movie Lover TV - Fullscreen Web Viewer",
+  "description": "Full-screen TV, mobile, and emulator web view loading https://movielover-tau.vercel.app/?view=tv with multi-layer and video streaming support.",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
