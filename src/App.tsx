@@ -44,8 +44,7 @@ function formatUrl(raw: string): string {
 export default function App() {
   const [inputUrl, setInputUrl] = useState<string>(TARGET_DEFAULT_URL);
   const [activeUrl, setActiveUrl] = useState<string>(TARGET_DEFAULT_URL);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [iframeKey, setIframeKey] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isControlsVisible, setIsControlsVisible] = useState<boolean>(false); // Starts hidden for pristine edge-to-edge full screen
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showEditModal, setShowEditModal] = useState<boolean>(false);
@@ -53,15 +52,22 @@ export default function App() {
   const [editUrlInput, setEditUrlInput] = useState<string>('');
   const [recents, setRecents] = useState<string[]>([]);
 
-  // Multi-layer and device display settings
+  // Multi-layer and display settings
   const [zoomLevel, setZoomLevel] = useState<number>(100);
   const [tvOverscanPadding, setTvOverscanPadding] = useState<number>(0);
-  const [enableSandbox, setEnableSandbox] = useState<boolean>(false); // Unrestricted native mode for full video & multi-layer playback
   const [autoHideToolbar, setAutoHideToolbar] = useState<boolean>(true);
 
   const hideTimerRef = useRef<number | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Sync with HTML iframe element
+  const getIframeElement = (): HTMLIFrameElement | null => {
+    return document.getElementById('fullscreen-webview-iframe') as HTMLIFrameElement | null;
+  };
+
+  const getWrapperElement = (): HTMLElement | null => {
+    return document.getElementById('iframe-wrapper');
+  };
 
   // Load saved recents and settings
   useEffect(() => {
@@ -78,18 +84,16 @@ export default function App() {
         const parsed = JSON.parse(savedSettings);
         if (typeof parsed.zoomLevel === 'number') setZoomLevel(parsed.zoomLevel);
         if (typeof parsed.tvOverscanPadding === 'number') setTvOverscanPadding(parsed.tvOverscanPadding);
-        if (typeof parsed.enableSandbox === 'boolean') setEnableSandbox(parsed.enableSandbox);
         if (typeof parsed.autoHideToolbar === 'boolean') setAutoHideToolbar(parsed.autoHideToolbar);
       }
     } catch {
-      // Ignore localstorage errors
+      // Ignore storage errors
     }
   }, []);
 
   const saveSettings = (newSettings: {
     zoomLevel: number;
     tvOverscanPadding: number;
-    enableSandbox: boolean;
     autoHideToolbar: boolean;
   }) => {
     try {
@@ -118,7 +122,7 @@ export default function App() {
     }
   };
 
-  // Check URL query parameters or default to user's URL
+  // Check URL query parameters or initialize
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const queryUrl = params.get('url');
@@ -129,9 +133,48 @@ export default function App() {
       const formatted = formatUrl(target);
       setActiveUrl(formatted);
       setInputUrl(formatted);
-      setIsLoading(true);
       saveToRecents(formatted);
+
+      const frame = getIframeElement();
+      if (frame && frame.src !== formatted) {
+        frame.src = formatted;
+      }
     }
+  }, []);
+
+  // Update HTML wrapper styling based on zoom and TV overscan settings
+  useEffect(() => {
+    const wrapper = getWrapperElement();
+    const frame = getIframeElement();
+
+    if (wrapper) {
+      if (activeUrl) {
+        wrapper.style.display = 'block';
+        wrapper.style.padding = tvOverscanPadding > 0 ? `${tvOverscanPadding}vh ${tvOverscanPadding}vw` : '0px';
+      } else {
+        wrapper.style.display = 'none';
+      }
+    }
+
+    if (frame) {
+      frame.style.transform = zoomLevel !== 100 ? `scale(${zoomLevel / 100})` : 'none';
+      frame.style.transformOrigin = 'center center';
+    }
+  }, [activeUrl, tvOverscanPadding, zoomLevel]);
+
+  // Hook iframe onLoad event
+  useEffect(() => {
+    const frame = getIframeElement();
+    if (!frame) return;
+
+    const handleLoad = () => {
+      setIsLoading(false);
+    };
+
+    frame.addEventListener('load', handleLoad);
+    return () => {
+      frame.removeEventListener('load', handleLoad);
+    };
   }, []);
 
   // Listen to fullscreen changes
@@ -144,45 +187,6 @@ export default function App() {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, []);
-
-  // Smart TV Remote & Keyboard controller
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // TV Remote keys:
-      // Tizen Back: 10009
-      // webOS Back: 461
-      // Android Back: 4
-      // Standard Escape: 27 / 'Escape'
-      if (
-        e.key === 'Escape' ||
-        e.keyCode === 10009 ||
-        e.keyCode === 461 ||
-        e.keyCode === 4 ||
-        e.key === 'GoBack'
-      ) {
-        if (showEditModal) {
-          setShowEditModal(false);
-          e.preventDefault();
-        } else if (showSettingsModal) {
-          setShowSettingsModal(false);
-          e.preventDefault();
-        } else if (activeUrl) {
-          // Toggle toolbar visibility
-          setIsControlsVisible((prev) => !prev);
-          e.preventDefault();
-        }
-      }
-
-      if (activeUrl && autoHideToolbar) {
-        revealControlsTemporarily();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showEditModal, showSettingsModal, activeUrl, autoHideToolbar]);
 
   // Auto-hide toolbar logic
   const revealControlsTemporarily = useCallback(() => {
@@ -197,6 +201,41 @@ export default function App() {
     }
   }, [autoHideToolbar]);
 
+  // Smart TV Remote & Keyboard controller
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // TV Remote keys:
+      // Tizen Back: 10009, webOS Back: 461, Android Back: 4, Escape: 27
+      if (
+        e.key === 'Escape' ||
+        e.keyCode === 10009 ||
+        e.keyCode === 461 ||
+        e.keyCode === 4 ||
+        e.key === 'GoBack'
+      ) {
+        if (showEditModal) {
+          setShowEditModal(false);
+          e.preventDefault();
+        } else if (showSettingsModal) {
+          setShowSettingsModal(false);
+          e.preventDefault();
+        } else if (activeUrl) {
+          setIsControlsVisible((prev) => !prev);
+          e.preventDefault();
+        }
+      }
+
+      if (activeUrl && autoHideToolbar) {
+        revealControlsTemporarily();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showEditModal, showSettingsModal, activeUrl, autoHideToolbar, revealControlsTemporarily]);
+
   const handleLaunch = (targetUrl?: string) => {
     const toLaunch = targetUrl || inputUrl;
     const formatted = formatUrl(toLaunch);
@@ -204,8 +243,12 @@ export default function App() {
 
     setActiveUrl(formatted);
     setIsLoading(true);
-    setIframeKey((prev) => prev + 1);
     saveToRecents(formatted);
+
+    const frame = getIframeElement();
+    if (frame) {
+      frame.src = formatted;
+    }
 
     try {
       window.history.replaceState(null, '', `?url=${encodeURIComponent(formatted)}`);
@@ -222,6 +265,10 @@ export default function App() {
     setActiveUrl('');
     setInputUrl('');
     setIsLoading(false);
+    const wrapper = getWrapperElement();
+    if (wrapper) {
+      wrapper.style.display = 'none';
+    }
     try {
       window.history.replaceState(null, '', window.location.pathname);
     } catch {
@@ -231,7 +278,14 @@ export default function App() {
 
   const handleReload = () => {
     setIsLoading(true);
-    setIframeKey((prev) => prev + 1);
+    const frame = getIframeElement();
+    if (frame) {
+      const current = frame.src;
+      frame.src = 'about:blank';
+      setTimeout(() => {
+        frame.src = current;
+      }, 50);
+    }
     if (autoHideToolbar) {
       revealControlsTemporarily();
     }
@@ -245,7 +299,7 @@ export default function App() {
         await document.exitFullscreen();
       }
     } catch {
-      // Fullscreen not supported or blocked
+      // Fullscreen not supported
     }
   };
 
@@ -255,53 +309,15 @@ export default function App() {
     }
   };
 
-  // Full Screen Web View with Multi-Layer Support
+  // If website is actively loaded, render HUD overlay controls
   if (activeUrl) {
     return (
-      <main
-        id="fullscreen-iframe-container"
+      <div
+        id="hud-overlay-container"
         onMouseMove={autoHideToolbar ? revealControlsTemporarily : undefined}
         onTouchStart={autoHideToolbar ? revealControlsTemporarily : undefined}
-        className="fixed inset-0 w-screen h-screen h-[100dvh] overflow-hidden bg-black select-none m-0 p-0"
+        className="fixed inset-0 w-screen h-screen pointer-events-none select-none z-30"
       >
-        {/* Frame Wrapper with TV Overscan Padding and Scale Zoom support */}
-        <div
-          id="iframe-scaler-wrapper"
-          className="w-full h-full relative transition-all duration-200 ease-out m-0 p-0"
-          style={{
-            padding: tvOverscanPadding > 0 ? `${tvOverscanPadding}vh ${tvOverscanPadding}vw` : '0px',
-            transform: zoomLevel !== 100 ? `scale(${zoomLevel / 100})` : 'none',
-            transformOrigin: 'center center',
-          }}
-        >
-          {/* 
-            Multi-Layer Native Support:
-            - Full Permissive Allow String (Autoplay, Fullscreen, Media, DRM, WebGL, Canvas, Audio, Picture-in-picture)
-            - Optional Sandbox: When disabled (default), all multi-layer DOM, video player layers, canvas, and Web Workers work natively
-          */}
-          <iframe
-            id="fullscreen-webview-iframe"
-            key={`${iframeKey}-${enableSandbox}`}
-            ref={iframeRef}
-            src={activeUrl}
-            title="Movie Lover TV Web View"
-            className="w-full h-full border-0 bg-black block"
-            allow="accelerometer; ambient-light-sensor; autoplay; battery; camera; clipboard-read; clipboard-write; display-capture; document-domain; encrypted-media; execution-while-not-rendered; execution-while-out-of-viewport; fullscreen; geolocation; gyroscope; hid; idle-detection; magnetometer; microphone; midi; navigation-override; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; speaker-selection; sync-xhr; usb; web-share; xr-spatial-tracking"
-            {...(enableSandbox
-              ? {
-                  sandbox:
-                    'allow-downloads allow-forms allow-modals allow-orientation-lock allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts allow-top-navigation allow-top-navigation-by-user-activation allow-storage-access-by-user-activation',
-                }
-              : {})}
-            onLoad={() => {
-              setIsLoading(false);
-            }}
-            onError={() => {
-              setIsLoading(false);
-            }}
-          />
-        </div>
-
         {/* Loading Indicator */}
         {isLoading && (
           <div
@@ -316,13 +332,13 @@ export default function App() {
           </div>
         )}
 
-        {/* Floating Top Control Bar (Auto-hides to maintain 100% borderless clean display) */}
+        {/* Floating Top Control Bar */}
         <header
           id="floating-control-bar"
-          className={`fixed top-3 left-1/2 -translate-x-1/2 z-40 transition-all duration-300 ease-in-out max-w-[96vw] ${
+          className={`fixed top-3 left-1/2 -translate-x-1/2 z-40 transition-all duration-300 ease-in-out max-w-[96vw] pointer-events-auto ${
             isControlsVisible
-              ? 'translate-y-0 opacity-100 pointer-events-auto'
-              : '-translate-y-16 opacity-0 pointer-events-none'
+              ? 'translate-y-0 opacity-100'
+              : '-translate-y-16 opacity-0 !pointer-events-none'
           }`}
         >
           <div className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-zinc-950/95 border border-zinc-800/90 text-zinc-200 shadow-2xl backdrop-blur-md">
@@ -362,7 +378,7 @@ export default function App() {
               <RotateCw className="w-3.5 h-3.5" />
             </button>
 
-            {/* Open in new tab button */}
+            {/* Open in new tab */}
             <button
               id="btn-open-external"
               type="button"
@@ -373,13 +389,13 @@ export default function App() {
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
 
-            {/* Display / Device / Layer Settings */}
+            {/* Settings */}
             <button
               id="btn-display-settings"
               type="button"
               onClick={() => setShowSettingsModal(true)}
               className="p-2 text-xs font-medium rounded-xl hover:bg-zinc-800 hover:text-white transition-colors cursor-pointer text-zinc-300 focus-visible:ring-2"
-              title="Device, Zoom & Multi-Layer Settings"
+              title="Device, Zoom & TV Overscan Settings"
             >
               <Sliders className="w-3.5 h-3.5" />
             </button>
@@ -399,7 +415,7 @@ export default function App() {
               )}
             </button>
 
-            {/* Reset / Blank page button */}
+            {/* Reset / Blank page */}
             <button
               id="btn-close-iframe"
               type="button"
@@ -423,7 +439,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Small floating trigger button at top right when toolbar is hidden */}
+        {/* Small restore icon at top right */}
         {!isControlsVisible && (
           <button
             id="btn-restore-bar"
@@ -432,7 +448,7 @@ export default function App() {
               setIsControlsVisible(true);
               if (autoHideToolbar) revealControlsTemporarily();
             }}
-            className="fixed top-2 right-3 z-40 p-2 rounded-full bg-zinc-950/70 hover:bg-zinc-900 border border-zinc-800/80 text-zinc-300 shadow-xl backdrop-blur-md opacity-30 hover:opacity-100 transition-all cursor-pointer focus-visible:opacity-100 focus-visible:ring-2"
+            className="fixed top-2 right-3 z-40 p-2 rounded-full bg-zinc-950/70 hover:bg-zinc-900 border border-zinc-800/80 text-zinc-300 shadow-xl backdrop-blur-md opacity-30 hover:opacity-100 transition-all cursor-pointer pointer-events-auto focus-visible:opacity-100 focus-visible:ring-2"
             title="Show Controls (or press Remote Back/Escape)"
           >
             <Sliders className="w-3.5 h-3.5" />
@@ -443,7 +459,7 @@ export default function App() {
         {showEditModal && (
           <div
             id="modal-change-url"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs pointer-events-auto"
           >
             <div className="w-full max-w-lg rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100">
               <div className="flex items-center justify-between mb-4">
@@ -506,11 +522,11 @@ export default function App() {
           </div>
         )}
 
-        {/* Display & Multi-layer Settings Modal */}
+        {/* Display & Settings Modal */}
         {showSettingsModal && (
           <div
             id="modal-settings"
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs pointer-events-auto"
           >
             <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-zinc-800 p-6 shadow-2xl text-zinc-100 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-5">
@@ -529,53 +545,7 @@ export default function App() {
               </div>
 
               <div className="space-y-5 text-sm">
-                {/* Multi-layer compatibility mode */}
-                <div className="p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2">
-                      <Layers className="w-4 h-4 text-emerald-400" />
-                      <span className="font-medium text-zinc-200">Multi-Layer Compatibility</span>
-                    </div>
-                    <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 font-medium">
-                      {enableSandbox ? 'Sandboxed' : 'Unrestricted Native'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-zinc-400 mb-3 leading-relaxed">
-                    Unrestricted mode allows full support for multi-layer WebGL canvases, video overlays, popups, and workers.
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEnableSandbox(false);
-                        saveSettings({ zoomLevel, tvOverscanPadding, enableSandbox: false, autoHideToolbar });
-                      }}
-                      className={`flex-1 py-1.5 text-xs rounded-lg font-medium cursor-pointer transition-colors ${
-                        !enableSandbox
-                          ? 'bg-indigo-600 text-white shadow-sm'
-                          : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'
-                      }`}
-                    >
-                      Unrestricted (Full Layer)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEnableSandbox(true);
-                        saveSettings({ zoomLevel, tvOverscanPadding, enableSandbox: true, autoHideToolbar });
-                      }}
-                      className={`flex-1 py-1.5 text-xs rounded-lg font-medium cursor-pointer transition-colors ${
-                        enableSandbox
-                          ? 'bg-indigo-600 text-white shadow-sm'
-                          : 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800'
-                      }`}
-                    >
-                      Strict Sandbox
-                    </button>
-                  </div>
-                </div>
-
-                {/* Smart TV Overscan compensation */}
+                {/* TV Overscan Compensation */}
                 <div className="p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2">
@@ -594,7 +564,7 @@ export default function App() {
                         type="button"
                         onClick={() => {
                           setTvOverscanPadding(pad);
-                          saveSettings({ zoomLevel, tvOverscanPadding: pad, enableSandbox, autoHideToolbar });
+                          saveSettings({ zoomLevel, tvOverscanPadding: pad, autoHideToolbar });
                         }}
                         className={`py-1.5 text-xs rounded-lg font-medium cursor-pointer transition-colors ${
                           tvOverscanPadding === pad
@@ -608,7 +578,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Zoom / Scaling for High DPI TV or mobile */}
+                {/* Scale / Zoom */}
                 <div className="p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
@@ -623,7 +593,7 @@ export default function App() {
                       onClick={() => {
                         const newZ = Math.max(50, zoomLevel - 10);
                         setZoomLevel(newZ);
-                        saveSettings({ zoomLevel: newZ, tvOverscanPadding, enableSandbox, autoHideToolbar });
+                        saveSettings({ zoomLevel: newZ, tvOverscanPadding, autoHideToolbar });
                       }}
                       className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 cursor-pointer"
                       title="Zoom Out"
@@ -639,7 +609,7 @@ export default function App() {
                       onChange={(e) => {
                         const val = Number(e.target.value);
                         setZoomLevel(val);
-                        saveSettings({ zoomLevel: val, tvOverscanPadding, enableSandbox, autoHideToolbar });
+                        saveSettings({ zoomLevel: val, tvOverscanPadding, autoHideToolbar });
                       }}
                       className="flex-1 accent-indigo-500 cursor-pointer"
                     />
@@ -648,7 +618,7 @@ export default function App() {
                       onClick={() => {
                         const newZ = Math.min(150, zoomLevel + 10);
                         setZoomLevel(newZ);
-                        saveSettings({ zoomLevel: newZ, tvOverscanPadding, enableSandbox, autoHideToolbar });
+                        saveSettings({ zoomLevel: newZ, tvOverscanPadding, autoHideToolbar });
                       }}
                       className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 cursor-pointer"
                       title="Zoom In"
@@ -659,7 +629,7 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         setZoomLevel(100);
-                        saveSettings({ zoomLevel: 100, tvOverscanPadding, enableSandbox, autoHideToolbar });
+                        saveSettings({ zoomLevel: 100, tvOverscanPadding, autoHideToolbar });
                       }}
                       className="px-2.5 py-1.5 text-xs rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white cursor-pointer"
                     >
@@ -668,7 +638,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Auto-hide toolbar toggle */}
+                {/* Auto-hide toolbar */}
                 <div className="flex items-center justify-between p-3.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80">
                   <div>
                     <span className="font-medium text-zinc-200 block">Auto-Hide Floating Toolbar</span>
@@ -679,7 +649,7 @@ export default function App() {
                     onClick={() => {
                       const nextVal = !autoHideToolbar;
                       setAutoHideToolbar(nextVal);
-                      saveSettings({ zoomLevel, tvOverscanPadding, enableSandbox, autoHideToolbar: nextVal });
+                      saveSettings({ zoomLevel, tvOverscanPadding, autoHideToolbar: nextVal });
                       if (!nextVal) setIsControlsVisible(true);
                     }}
                     className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
@@ -707,59 +677,40 @@ export default function App() {
             </div>
           </div>
         )}
-      </main>
+      </div>
     );
   }
 
-  // Blank clean landing view (displayed if user clicks close)
+  // Blank landing view (if user explicitly closed or reset URL)
   return (
     <main
       id="blank-fullscreen-view"
-      className="fixed inset-0 w-screen h-screen h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6 bg-zinc-950 text-zinc-100 overflow-y-auto"
+      className="fixed inset-0 w-screen h-screen h-[100dvh] flex flex-col items-center justify-center p-4 sm:p-6 bg-zinc-950 text-zinc-100 overflow-y-auto z-30 pointer-events-auto"
     >
       <div className="w-full max-w-xl flex flex-col items-center text-center my-auto">
-        {/* Device Compatibility Icon Row */}
         <div id="device-support-badge" className="flex items-center gap-3 mb-6">
-          <div
-            className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg"
-            title="Movie Lover TV"
-          >
+          <div className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
             <Film className="w-5 h-5 text-indigo-400" />
           </div>
-          <div
-            className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg"
-            title="Smart TV Ready"
-          >
+          <div className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
             <Tv className="w-5 h-5 text-cyan-400" />
           </div>
-          <div
-            className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg"
-            title="Mobile & Emulator Ready"
-          >
+          <div className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
             <Smartphone className="w-5 h-5 text-purple-400" />
           </div>
-          <div
-            className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg"
-            title="Multi-Layer Ready"
-          >
+          <div className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
             <Layers className="w-5 h-5 text-emerald-400" />
           </div>
         </div>
 
-        <h1
-          id="main-heading"
-          className="text-2xl sm:text-3xl font-semibold tracking-tight text-white mb-2"
-        >
+        <h1 id="main-heading" className="text-2xl sm:text-3xl font-semibold tracking-tight text-white mb-2">
           Movie Lover TV Web Viewer
         </h1>
-        <p
-          id="main-subtext"
-          className="text-xs sm:text-sm text-zinc-400 max-w-md mb-6 leading-relaxed"
-        >
+        <p id="main-subtext" className="text-xs sm:text-sm text-zinc-400 max-w-md mb-6 leading-relaxed">
           Smart TV, Mobile, Emulator এবং যেকোনো ডিভাইসের জন্য মাল্টি-লেয়ার ফুল স্ক্রিন ওয়েব ভিউ।
         </p>
 
-        {/* Primary 1-Click Launch Button for Movie Lover TV */}
+        {/* 1-Click Launch Button for Movie Lover TV */}
         <button
           id="btn-launch-movielover-direct"
           type="button"
@@ -806,7 +757,7 @@ export default function App() {
           </div>
         </form>
 
-        {/* Quick Sample Presets */}
+        {/* Presets */}
         <div id="quick-presets" className="mt-6 flex flex-wrap items-center justify-center gap-2">
           <span className="text-xs text-zinc-500 mr-1 flex items-center gap-1">
             <Eye className="w-3.5 h-3.5" /> Presets:
@@ -827,7 +778,7 @@ export default function App() {
           ))}
         </div>
 
-        {/* Recent URLs history for Smart TV & Mobile quick click */}
+        {/* Recents */}
         {recents.length > 0 && (
           <div id="recent-urls-panel" className="mt-6 w-full text-left">
             <div className="flex items-center justify-between mb-2">
@@ -864,13 +815,12 @@ export default function App() {
           </div>
         )}
 
-        {/* Device hints & Smart TV remote help */}
         <footer id="footnote-info" className="mt-8 text-xs text-zinc-500 max-w-md space-y-1">
           <p>
-            • <strong>Smart TV & Remote:</strong> রিমোটের <code className="text-zinc-400 font-mono">Back / Escape</code> চেপে যেকোনো সময় কন্ট্রোল মেনু টগল করা যাবে।
+            • <strong>HTML Embed:</strong> URL সরাসরি <code className="text-zinc-400 font-mono">index.html</code> ফাইলের ভেতরে সেভ করা আছে।
           </p>
           <p>
-            • <strong>Multi-Layer & Video:</strong> অটোপ্লে, ফুলস্ক্রিন, ভিডিও ওভারলে এবং পপআপ লেয়ার অক্ষুণ্ণ থাকবে।
+            • <strong>GitHub & Smart TV:</strong> কোনো বিল্ড টুল ছাড়াই যেকোনো প্ল্যাটফর্মে সরাসরি ব্ল্যাক ফুলস্ক্রিনে চলবে।
           </p>
         </footer>
       </div>
